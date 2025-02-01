@@ -5,7 +5,7 @@
 #pragma semicolon 1
 #pragma newdecls required
 
-#define PLUGIN_VERSION "1.3"
+#define PLUGIN_VERSION "1.4"
 #define WHITELIST_FILE "configs/whitelist.txt"
 #define LOG_FILE "logs/ip_chat_blocker.log"
 
@@ -76,14 +76,13 @@ void LoadIPLists()
         if (strlen(line) > 0)
         {
             g_hWhitelistIPs.PushString(line);
+            LogMessage("Added IP to whitelist: %s", line);
         }
     }
     delete file;
 
     LogMessage("Loaded %d whitelisted IPs.", g_hWhitelistIPs.Length);
 }
-
-
 
 public Action Command_Say(int client, int args)
 {
@@ -92,6 +91,8 @@ public Action Command_Say(int client, int args)
 
     char text[192];
     GetCmdArgString(text, sizeof(text));
+    char logPath[PLATFORM_MAX_PATH];
+    BuildPath(Path_SM, logPath, sizeof(logPath), LOG_FILE);
 
     // Check for IP sharing
     if (ContainsIP(text))
@@ -106,11 +107,16 @@ public Action Command_Say(int client, int args)
 
             if (!IsIPWhitelisted(ip))
             {
+                LogMessage("Player %N provided a non-whitelisted IP: %s", client, ip);
                 int duration = g_cvMuteDuration.IntValue;
-                GagPlayer(client, duration, "Advertising");
-                LogToFile(LOG_FILE, "Player %N (IP: %s) was gagged for %d minutes for sharing a non-whitelisted IP.", client, ip, duration);
+                SilencePlayer(client, duration, "Advertising");
+                LogToFileEx(logPath, "Player %N (IP: %s) was gagged for %d minutes for sharing a non-whitelisted IP.", client, ip, duration);
                 CPrintToChat(client, "{green}[IP Chat Blocker] {white}You are gagged for %s. Reason: {red}Advertising", FormatDuration(duration));
                 return Plugin_Handled;
+            }
+            else
+            {
+                LogMessage("Player %N shared a whitelisted IP: %s. No action taken.", client, ip);
             }
         }
     }
@@ -141,6 +147,9 @@ int ExtractIPs(const char[] text, char[][] ips, int maxIps)
 
     for (int i = 0; i < partCount; i++)
     {
+        TrimString(parts[i]);
+        StripQuotes(parts[i]);
+
         if (IsValidIP(parts[i]))
         {
             strcopy(ips[ipCount], 16, parts[i]);
@@ -153,6 +162,7 @@ int ExtractIPs(const char[] text, char[][] ips, int maxIps)
 
     return ipCount;
 }
+
 
 bool IsValidIP(const char[] ip)
 {
@@ -181,7 +191,31 @@ int StringToIP(const char[] ip, int octets[4])
 
 bool IsIPWhitelisted(const char[] ip)
 {
-    return (g_hWhitelistIPs.FindString(ip) != -1);
+    char cleanIP[16];
+    strcopy(cleanIP, sizeof(cleanIP), ip);
+
+    if (cleanIP[0] == '"' && cleanIP[strlen(cleanIP) - 1] == '"')
+    {
+        cleanIP[strlen(cleanIP) - 1] = '\0';
+        strcopy(cleanIP, sizeof(cleanIP), cleanIP[1]);
+    }
+
+    for (int i = 0; i < g_hWhitelistIPs.Length; i++)
+    {
+        char storedIP[16];
+        g_hWhitelistIPs.GetString(i, storedIP, sizeof(storedIP));
+
+        LogMessage("Checking IP: Input [%s] (Cleaned: [%s]) vs Stored [%s]", ip, cleanIP, storedIP);
+
+        if (StrEqual(cleanIP, storedIP, false))
+        {
+            LogMessage("IP %s is whitelisted!", cleanIP);
+            return true;
+        }
+    }
+
+    LogMessage("IP %s is NOT whitelisted!", cleanIP);
+    return false;
 }
 
 bool DetectSpam(int client)
@@ -222,15 +256,18 @@ public Action ResetSpamCount(Handle timer, int userId)
 
 void HandleSpam(int client)
 {
+    char logPath[PLATFORM_MAX_PATH];
+    BuildPath(Path_SM, logPath, sizeof(logPath), LOG_FILE);
     if (g_cvSpamWarn.BoolValue)
     {
         CPrintToChat(client, "{green}[Spam Control] {white}Warning: Do not spam in chat.");
+        LogToFileEx(logPath, "Player %N was warned for spamming.", client);
     }
     else
     {
         int duration = g_cvSpamGagDuration.IntValue;
         GagPlayer(client, duration, "Spamming");
-        LogToFile(LOG_FILE, "Player %N was gagged for %d minutes for spamming.", client, duration);
+        LogToFileEx(logPath, "Player %N was gagged for %d minutes for spamming.", client, duration);
         CPrintToChat(client, "{green}[Spam Control] {white}You have been gagged for %s. Reason: {red}Spamming", FormatDuration(duration));
     }
 }
@@ -240,6 +277,16 @@ void GagPlayer(int client, int duration, const char[] reason)
     char command[64];
     Format(command, sizeof(command), "sm_gag #%d %d %s", GetClientUserId(client), duration, reason);
     ServerCommand(command);
+}
+
+void SilencePlayer(int client, int duration, const char[] reason)
+{
+    char logPath[PLATFORM_MAX_PATH];
+    BuildPath(Path_SM, logPath, sizeof(logPath), LOG_FILE);
+    char command[64];
+    Format(command, sizeof(command), "sm_silence #%d %d Advertising", GetClientUserId(client), duration);
+    ServerCommand(command);
+    //LogToFileEx(logPath, "Player %N was silenced for %d minutes. Reason: %s", client, duration, reason);
 }
 
 char[] FormatDuration(int duration)
